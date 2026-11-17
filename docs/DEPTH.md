@@ -13,7 +13,7 @@
 | M3 数量勾稽 | 统一包装单位并核对未到量 | POST /api/quantity/match | `app/modules/m3_quantity/units.py` `app/modules/m3_quantity/match.py` | `tests/test_m3_quantity.py` |
 | M4 税额核验 | 重算净额、税额与含税额 | POST /api/tax/check | `app/modules/m4_tax/calculate.py` `app/modules/m4_tax/verify.py` | `tests/test_m4_tax.py` |
 | M5 多对多匹配 | 在相同货号税率内组合匹配 | POST /api/matches/solve | `app/modules/m5_matching/candidates.py` `app/modules/m5_matching/solver.py` | `tests/test_m5_matching.py` |
-| M6 差异批次 | 核对金额守恒并导出差异 | POST /api/reconcile | `app/modules/m6_batches/compare.py` `app/modules/m6_batches/exporter.py` | `tests/test_m6_batches.py` |
+| M6 差异批次 | 关账、补票冲回并并排核对原月与调整月 | POST /api/reconcile | `app/modules/m6_batches/accounting.py` `app/modules/m6_batches/periods.py` | `tests/test_m6_batches.py` `tests/test_m6_accrual.py` |
 
 ## 陷阱登记
 
@@ -29,14 +29,38 @@
 | TRAP-19 | 组合候选顺序变化 | 匹配结果随输入顺序变化 | 按差额、数量与编号稳定择一 | `app/modules/m5_matching/solver.py` | `tests/test_m5_matching.py::test_choice_is_order_independent` |
 | TRAP-23 | 相邻税率边界 | 不同税率金额互相抵消 | 货号与税率共同分组 | `app/modules/m4_tax/verify.py` | `tests/test_m4_tax.py::test_different_tax_rates_never_offset` |
 | TRAP-26 | 同批重复执行 | 重复新增对账结果 | 输入摘要作为运行唯一键 | `app/store.py` | `tests/test_m6_batches.py::test_idempotent_record` |
+| TRAP-27 | 关账后补到发票 | 回写旧月改账 | 旧月只读，补票落首个开放月份 | `app/modules/m6_batches/accounting.py` | `tests/test_m6_accrual.py::test_late_invoice_lands_in_first_open_period` |
+| TRAP-28 | 补票只记新票 | 暂估与实际金额重复确认成本 | 先冲回对应暂估再登记实际金额 | `app/modules/m6_batches/accounting.py` | `tests/test_m6_accrual.py::test_partial_invoice_reverses_only_that_part` |
+| TRAP-29 | 部分补票 | 一次冲光全部暂估 | 仅冲发票金额对应的部分 | `app/modules/m6_batches/accounting.py` | `tests/test_m6_accrual.py::test_partial_invoice_reverses_only_that_part` |
+| TRAP-30 | 跨税率补票 | 13% 发票抵消 9% 暂估 | 按货号与税率分组，跨组拒绝 | `app/modules/m6_batches/accounting.py` | `tests/test_m6_accrual.py::test_different_tax_rate_cannot_offset` |
+| TRAP-31 | 并发关账 | 两人同时关账重复取数 | 写锁 + 版本号，过期状态拒绝 | `app/modules/m6_batches/periods.py` `app/store.py` | `tests/test_m6_accrual.py::test_concurrent_close_only_one_wins` |
+| TRAP-32 | 冲回半途中断 | 暂估已扣、金额未记 | 单事务回滚，重试确定性记账一次 | `app/modules/m6_batches/accounting.py` | `tests/test_m6_accrual.py::test_interrupted_reversal_keeps_original_books_and_retry_is_once` |
+| TRAP-33 | 重开关账 | 旧月快照被覆盖 | 快照按版本保存，旧版仍可查 | `app/modules/m6_batches/accounting.py` | `tests/test_m6_accrual.py::test_reopen_keeps_old_snapshot_queryable` |
 
 ## 对账规则
 
 - 采购数量 = 净验收数量 + 未到数量。
 - 净验收含税额 = 已开票含税额 + 未开票金额 + 已解释差异。
 - 不同税率的行不可相互抵消。
+- 关账时：原月验收 = 原月暂估 + 原月已开票；关账后旧月账本冻结。
+- 跨期补票：原月验收 = 跨期累计已开票 + 未冲回暂估；冲回与实际金额都只记在首个开放月份。
+- 部分补票只冲减发票金额对应的暂估，剩余暂估留待后续发票。
+
+## 账期接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | /api/periods | 开账（幂等） |
+| POST | /api/periods/close | 关账，可带 expected_version；过期版本返回 409 |
+| POST | /api/periods/reopen | 重开纠错，保留历史快照 |
+| POST | /api/receipts | 登记真实验收，已关账月份拒绝 |
+| POST | /api/invoices | 补票：首个开放月份冲回暂估并登记实际金额 |
+| GET | /api/periods/{period}/report | 已关账返回关账快照，可加 ?version= 指定历史版本 |
+| GET | /api/invoices/{invoice_id} | 单张发票的跨期冲回轨迹 |
+| GET | /api/export/differences.csv | 从真实暂估与流水导出的差异证据清单 |
 
 ## 已知不覆盖
 
 - 不处理外币汇兑，样例与输出均为人民币。
+- 不改动既有付款流程；不扩展商品映射表。
 

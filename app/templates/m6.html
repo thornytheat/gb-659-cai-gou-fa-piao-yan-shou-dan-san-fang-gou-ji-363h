@@ -1,27 +1,118 @@
 {% extends "base.html" %}
 {% block content %}
+{% set closed = periods | selectattr("status", "equalto", "CLOSED") | list | length %}
+{% set posted = invoices | selectattr("status", "equalto", "POSTED") | list | length %}
 <section class="kpis">
-  <div class="kpi"><b>差异项</b><strong>2</strong><small>条</small></div>
-  <div class="kpi"><b>通过</b><strong>0</strong><small>条</small></div>
-  <div class="kpi"><b>隔离</b><strong>3</strong><small>条</small></div>
+  <div class="kpi"><b>验收行</b><strong>{{ receipts | length }}</strong><small>条</small></div>
+  <div class="kpi"><b>补票</b><strong>{{ posted }}</strong><small>张</small></div>
+  <div class="kpi"><b>已关账</b><strong>{{ closed }}</strong><small>期</small></div>
   <div class="kpi"><b>规则版</b><strong>1.6</strong><small>v</small></div>
 </section>
 <div class="grid grid--quad">
   <section class="panel">
-    <div class="panel__head"><h2>差异批次</h2><span class="state state--ok">通过</span></div>
+    <div class="panel__head"><h2>账期</h2><span class="panel__meta">关账后旧月只读</span></div>
     <div class="panel__body panel__body--scroll">
-      <table class="ledger"><thead><tr><th>序号</th><th>业务键</th><th>状态</th><th class="num">值</th></tr></thead>
-      <tbody>{% for row in rows %}<tr><td class="num">{{ loop.index }}</td><td>{{ row.key }}</td><td>{{ row.status }}</td><td class="num">{{ row.value }}</td></tr>{% endfor %}</tbody></table>
+      <table class="ledger" id="periods">
+        <thead><tr><th>账期</th><th>状态</th><th class="num">版本</th><th>操作</th></tr></thead>
+        <tbody>
+        {% for period in periods %}
+          <tr data-period="{{ period.period }}" data-version="{{ period.version }}" data-status="{{ period.status }}">
+            <td>{{ period.period }}</td>
+            <td>{{ "已关账" if period.status == "CLOSED" else "开放" }}</td>
+            <td class="num">{{ period.version }}</td>
+            <td>
+              <button class="btn btn--mini" data-close="{{ period.period }}" data-version="{{ period.version }}"
+                {% if period.status == "CLOSED" %}disabled{% endif %}>关账</button>
+              <button class="btn btn--mini" data-reopen="{{ period.period }}"
+                {% if period.status != "CLOSED" %}disabled{% endif %}>重开</button>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4">尚未开账</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
     </div>
   </section>
   <section class="panel panel--evidence">
-    <div class="panel__head"><h2>证据</h2><span class="panel__meta">7 条</span></div>
-    <div class="panel__body"><div class="evidence"><b>RUN-659-6</b><span>LINE 7</span><code>/api/reconcile</code></div><pre id="result">等待运行</pre></div>
+    <div class="panel__head"><h2>操作结果</h2><span class="panel__meta" id="feedback">就绪</span></div>
+    <div class="panel__body">
+      <form class="stack" id="period-form">
+        <label>开账账期 <input name="period" placeholder="2026-12" required></label>
+        <button class="btn" type="submit">开账</button>
+      </form>
+      <form class="stack" id="receipt-form">
+        <label>验收编号 <input name="receipt_id" placeholder="GR-202612-01" required></label>
+        <label>账期 <input name="period" placeholder="2026-12" required></label>
+        <label>货号 <input name="sku" placeholder="SKU-A" required></label>
+        <label>税率 <input name="tax_rate" placeholder="0.13" required></label>
+        <label>金额 <input name="amount" placeholder="600.00" required></label>
+        <button class="btn" type="submit">登记验收</button>
+      </form>
+      <form class="stack" id="invoice-form">
+        <label>发票号 <input name="invoice_id" placeholder="IV-202612-01" required></label>
+        <label>验收编号 <input name="receipt_id" placeholder="GR-202610-01" required></label>
+        <label>金额 <input name="amount" placeholder="200.00" required></label>
+        <label>调整月 <input name="adjust_period" value="{{ suggested_adjustment }}" readonly></label>
+        <button class="btn btn--primary" type="submit">补票并冲回</button>
+      </form>
+      <pre id="result">等待运行</pre>
+    </div>
   </section>
   <section class="panel panel--status">
-    <div class="panel__head"><h2>原因分布</h2><span class="panel__meta">3 类</span></div>
-    <div class="panel__body"><div class="bar"><i style="width:85%"></i></div><div class="legend"><span>采纳 2</span><span>隔离 3</span></div></div>
+    <div class="panel__head"><h2>验收与补票</h2><span class="panel__meta">{{ receipts | length }} 验收 / {{ invoices | length }} 发票</span></div>
+    <div class="panel__body panel__body--scroll">
+      <table class="ledger">
+        <thead><tr><th>单据</th><th>业务键</th><th>原月</th><th>调整月</th><th class="num">暂估剩余</th><th class="num">冲回</th></tr></thead>
+        <tbody>
+        {% for receipt in receipts %}
+          <tr>
+            <td>{{ receipt.receipt_id }}</td>
+            <td>{{ receipt.sku }}|{{ receipt.tax_rate }}</td>
+            <td>{{ receipt.period }}</td>
+            <td>—</td>
+            <td class="num">{{ receipt.remaining_accrual }}</td>
+            <td class="num">{{ receipt.reversed_amount }}</td>
+          </tr>
+        {% endfor %}
+        {% for invoice in invoices %}
+          <tr>
+            <td>{{ invoice.invoice_id }}</td>
+            <td>{{ invoice.sku }}|{{ invoice.tax_rate }}</td>
+            <td>{{ invoice.source_period }}</td>
+            <td>{{ invoice.adjustment_period }}</td>
+            <td class="num">—</td>
+            <td class="num">{{ invoice.reversal_amount }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="panel panel--status">
+    <div class="panel__head"><h2>原月与调整月核对</h2><span class="panel__meta">不同税率不抵消</span></div>
+    <div class="panel__body panel__body--scroll">
+      <table class="ledger" id="compare">
+        <thead><tr><th>账期</th><th>业务键</th><th class="num">验收</th><th class="num">暂估</th><th class="num">已冲回</th><th class="num">实际</th><th class="num">未开票</th><th class="num">差异</th></tr></thead>
+        <tbody>
+        {% for group in reports %}
+          {% for line in group.report.lines %}
+            <tr class="{% if not line.balanced %}is-bad{% endif %}">
+              <td>{{ group.report.period }}</td>
+              <td>{{ line.business_key }}</td>
+              <td class="num">{{ line.received }}</td>
+              <td class="num">{{ line.accrued }}</td>
+              <td class="num">{{ line.reversed }}</td>
+              <td class="num">{{ line.actual }}</td>
+              <td class="num">{{ line.uninvoiced_accrual }}</td>
+              <td class="num">{{ line.difference }}</td>
+            </tr>
+          {% endfor %}
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
 </div>
+<script src="/static/m6.js"></script>
 {% endblock %}
-
